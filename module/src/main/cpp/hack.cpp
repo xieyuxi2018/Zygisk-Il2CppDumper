@@ -20,15 +20,17 @@
 
 // 1 = 照旧生成 dump.cs（76MB，耗时几十秒）；0 = 只跑实时采样（pos.log）
 #ifndef ENABLE_DUMP
-#define ENABLE_DUMP 1
+#define ENABLE_DUMP 0
 #endif
 
 void hack_start(const char *game_data_dir) {
     bool load = false;
-    for (int i = 0; i < 10; i++) {
+    // 冷启动时 libil2cpp.so 可能要十几秒才加载（王者尤其慢），所以等 60 秒而不是 10 秒
+    for (int i = 0; i < 60; i++) {
         void *handle = xdl_open("libil2cpp.so", 0);
         if (handle) {
             load = true;
+            LOGI("libil2cpp.so found after %ds", i);
             il2cpp_api_init(handle);
             // 先把实时采样线程起起来（每秒一次），再去做耗时的 dump.cs
             pos_reader_start(game_data_dir);
@@ -39,6 +41,7 @@ void hack_start(const char *game_data_dir) {
 #endif
             break;
         } else {
+            if (i % 5 == 0) LOGI("waiting for libil2cpp.so ... %ds", i);
             sleep(1);
         }
     }
