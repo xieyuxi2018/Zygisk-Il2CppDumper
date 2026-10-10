@@ -90,9 +90,25 @@ adb pull /data/local/tmp/pos.log .
 
 ## 排错记录
 
+采样器现在会把**进度写进 `<app_data_dir>/files/pos_debug.log`**（不依赖 logcat，
+用 `adb shell su -c 'cat /data/data/com.tencent.tmgp.sgame/files/pos_debug.log'` 看）：
+
+```
+hack_start: enter tid=9166 dir=/data/data/...
+libil2cpp.so found after 2s handle=0x...
+il2cpp_api_init returned
+pos_reader_start called
+reader_main: enter ...
+class OK: AivoiceV2.HeroUpdate -> 0x...
+resolved=11/11 regions=42
+idle pass=11 t=... (no objects found)
+t=... samples=5 pass=23          <- 抓到对象了
+```
+
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 模块装了但完全没有日志 | 游戏在 Magisk **denylist** 里 → Zygisk 不注入 | `magisk --denylist rm com.tencent.tmgp.sgame` 后重启 |
-| 日志里有 `detect game:` 但无 `hack thread:` | logcat 溢出/限流，未必真没跑；用 `/proc/<pid>/fd` 看 pos.log 是否被打开来判断 | —— |
-| `libil2cpp.so not found in thread …` | 冷启动时 libil2cpp 加载慢（旧代码只等 10s） | 已改成等 **60s** |
+| 只有 `detect game:`、之后什么都没有 | 旧代码只等 10s libil2cpp，王者冷启动/进对局会重启进程，等不到 | 已改成等 **60s**，并把每步写进 `pos_debug.log` |
+| 卡在 `Waiting for il2cpp_init...` 永不结束 | `il2cpp_is_vm_thread(NULL)` 判的是"当前线程是不是 IL2CPP 线程"，我们这个 pthread 不是 → 原写法**无超时会死等** | 已改成 **domain 建立即视为就绪 + 最多等 120s** |
 | 进对局时游戏闪退，crash 里有 `il2cpp_gc_foreach_heap+24` | v1 的 GC 扫堆把游戏打崩 | 已改成 v2 只读内存扫描 |
+| `pos.log` 只有 `# pos_reader start ...` 没有 `C` 行 | 采样器活着，但当前场景没有目标对象（比如还在大厅） | 进对局后自然会有；`resolved=0/11` 才是类名解析失败 |
