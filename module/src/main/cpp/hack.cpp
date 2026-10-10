@@ -4,6 +4,7 @@
 
 #include "hack.h"
 #include "il2cpp_dump.h"
+#include "pos_reader.h"
 #include "log.h"
 #include "xdl.h"
 #include <cstring>
@@ -24,6 +25,8 @@ void hack_start(const char *game_data_dir) {
         if (handle) {
             load = true;
             il2cpp_api_init(handle);
+            // 先把实时采样线程起起来（每秒一次），再去做耗时的 dump.cs
+            pos_reader_start(game_data_dir);
             il2cpp_dump(game_data_dir);
             break;
         } else {
