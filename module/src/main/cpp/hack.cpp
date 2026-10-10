@@ -24,6 +24,8 @@
 #endif
 
 void hack_start(const char *game_data_dir) {
+    pos_reader_set_dir(game_data_dir);
+    pos_debug("hack_start: enter tid=%d dir=%s", gettid(), game_data_dir ? game_data_dir : "(null)");
     bool load = false;
     // 冷启动时 libil2cpp.so 可能要十几秒才加载（王者尤其慢），所以等 60 秒而不是 10 秒
     for (int i = 0; i < 60; i++) {
@@ -31,9 +33,12 @@ void hack_start(const char *game_data_dir) {
         if (handle) {
             load = true;
             LOGI("libil2cpp.so found after %ds", i);
+            pos_debug("libil2cpp.so found after %ds handle=%p", i, handle);
             il2cpp_api_init(handle);
+            pos_debug("il2cpp_api_init returned");
             // 先把实时采样线程起起来（每秒一次），再去做耗时的 dump.cs
             pos_reader_start(game_data_dir);
+            pos_debug("pos_reader_start called");
 #if ENABLE_DUMP
             il2cpp_dump(game_data_dir);
 #else
@@ -41,12 +46,16 @@ void hack_start(const char *game_data_dir) {
 #endif
             break;
         } else {
-            if (i % 5 == 0) LOGI("waiting for libil2cpp.so ... %ds", i);
+            if (i % 5 == 0) {
+                LOGI("waiting for libil2cpp.so ... %ds", i);
+                pos_debug("waiting libil2cpp.so ... %ds", i);
+            }
             sleep(1);
         }
     }
     if (!load) {
         LOGI("libil2cpp.so not found in thread %d", gettid());
+        pos_debug("libil2cpp.so NOT found after 60s, give up");
     }
 }
 
