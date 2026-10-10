@@ -47,8 +47,8 @@ static const int   POS_MAX_OBJ     = 128;         // 每类每轮最多记录多
 static const int   POS_FULL_OBJ    = 2;           // 每类每轮打印几个"全字段"
 static const char *POS_LOG_REL     = "/files/pos.log";
 static const long  POS_LOG_MAX     = 64L * 1024 * 1024;
-static const unsigned long long POS_REGION_MIN = 1ULL << 20;      // 1MB
-static const unsigned long long POS_REGION_MAX = 420ULL << 20;    // 420MB
+static const unsigned long long POS_REGION_MIN = 1ULL << 20;       // 1MB
+static const unsigned long long POS_REGION_MAX = 1024ULL << 20;    // 1GB（IL2CPP 堆有 456MB 的大区，太小会漏）
 
 struct Target {
     const char *image;   // 空字符串 = 在所有 image 里按命名空间+类名找
@@ -492,6 +492,9 @@ static void reader_main(const char *game_data_dir) {
         }
         long t = now_ms();
         int written = 0;
+        if (pass % 20 == 1) load_regions();          // 堆会长大/搬迁, 定期刷新区域表
+        unsigned long long scan_bytes = 0;
+        int totals[40] = {0};
         for (int i = 0; i < TARGET_COUNT; ++i) {
             if (!g_klass[i]) continue;
             Il2CppObject *objs[POS_MAX_OBJ];
@@ -499,8 +502,10 @@ static void reader_main(const char *game_data_dir) {
             int n = 0;
             for (const auto &r : g_regions) {
                 n += scan_region(g_klass[i], r, objs + n, POS_MAX_OBJ - n, &total);
+                scan_bytes += (r.end - r.start);
                 if (n >= POS_MAX_OBJ) break;
             }
+            if (i < 40) totals[i] = total;
             if (total <= 0) continue;
             fprintf(fp, "S t=%ld cls=%s.%s total=%d shown=%d\n", t, TARGETS[i].ns, TARGETS[i].name,
                     total, n);
@@ -514,9 +519,17 @@ static void reader_main(const char *game_data_dir) {
         fclose(fp);
         if (written > 0) {
             LOGI("pos_reader: t=%ld samples=%d", t, written);
-            pos_debug("t=%ld samples=%d pass=%ld", t, written, pass);
+            pos_debug("t=%ld samples=%d pass=%ld regions=%zu scanned=%lluMB", t, written, pass,
+                      g_regions.size(), scan_bytes >> 20);
         } else if (pass % 10 == 1) {
-            pos_debug("idle pass=%ld t=%ld (no objects found)", pass, t);
+            char hits[512];
+            int off = 0;
+            for (int i = 0; i < TARGET_COUNT && off < 400; ++i) {
+                if (!g_klass[i]) continue;
+                off += snprintf(hits + off, sizeof(hits) - off, "%s=%d ", TARGETS[i].name, totals[i]);
+            }
+            pos_debug("idle pass=%ld t=%ld regions=%zu scanned=%lluMB hits[%s]",
+                      pass, t, g_regions.size(), scan_bytes >> 20, hits);
         }
         usleep(POS_INTERVAL_MS * 1000);
     }
