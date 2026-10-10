@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <cstdarg>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +57,11 @@ struct Target {
 };
 
 static const Target TARGETS[] = {
+        // ★ 实体本体(每局每个英雄/野怪/兵线一个, 长期存在, 带 Vector3 position)
+        {"Scripts.GameCore.dll", "Assets.Scripts.GameLogic", "ActorLinker"},
+        {"Scripts.GameCore.dll", "Assets.Scripts.GameLogic", "Player"},
+        {"Scripts.GameCore.dll", "Assets.Scripts.GameLogic", "ActorConfig"},
+        // 战场播报协议(protobuf 消息, 池化对象, 多数时刻是空的)
         {"Scripts.Plugins.dll", "AivoiceV2", "GameInfoDynamic"},
         {"Scripts.Plugins.dll", "AivoiceV2", "HeroUpdate"},
         {"Scripts.Plugins.dll", "AivoiceV2", "Hero"},
@@ -203,32 +209,116 @@ static bool print_vint3(FILE *fp, const char *label, Il2CppObject *p) {
     return true;
 }
 
+// 静态字段不在实例里，按实例偏移去读只会读到垃圾 —— 全部跳过
+static bool field_is_static(FieldInfo *f) {
+    if (il2cpp_field_get_flags) return (il2cpp_field_get_flags(f) & 0x10) != 0;  // FIELD_ATTRIBUTE_STATIC
+    return false;
+}
+
+static const char *field_type_name(FieldInfo *f) {
+    if (!il2cpp_field_get_type || !il2cpp_type_get_name) return nullptr;
+    const Il2CppType *t = il2cpp_field_get_type(f);
+    return t ? il2cpp_type_get_name(t) : nullptr;
+}
+
+// 关心"位置/身份"类字段
+static bool interesting_name(const char *n) {
+    static const char *KW[] = {"position", "location", "objid", "runtimeid", "camp", "name",
+                               "forward", "bornpos", "groundy", "hp", "level", "configid",
+                               "wave", "route", "visible", "speed", "pos"};
+    if (!n) return false;
+    for (const char *kw : KW) {
+        size_t kl = strlen(kw);
+        for (const char *p = n; *p; ++p) {
+            size_t i = 0;
+            while (i < kl && p[i] && tolower((unsigned char) p[i]) == kw[i]) i++;
+            if (i == kl) return true;
+        }
+    }
+    return false;
+}
+
+// inline 值类型(如 Vector3 / VInt3 / Quaternion): int 与 float 两种解释都打出来
+static void print_value_type(FILE *fp, const char *label, uint8_t *base, const char *tname) {
+    int32_t i0 = *(int32_t *) (base + 0), i1 = *(int32_t *) (base + 4), i2 = *(int32_t *) (base + 8);
+    float f0 = *(float *) (base + 0), f1 = *(float *) (base + 4), f2 = *(float *) (base + 8);
+    fprintf(fp, " %s(%s) int=(%d,%d,%d) float=(%.2f,%.2f,%.2f)", label, tname ? tname : "?",
+            (int) i0, (int) i1, (int) i2, (double) f0, (double) f1, (double) f2);
+}
+
+// IL2CPP 字符串: +0x10 长度, +0x14 UTF-16 字符
+static void print_string(FILE *fp, const char *label, Il2CppObject *s) {
+    if (!s || !plausible_ptr(s)) {
+        fprintf(fp, " %s=null", label);
+        return;
+    }
+    int32_t len = 0;
+    memcpy(&len, (uint8_t *) s + 0x10, 4);
+    if (len < 0 || len > 512) {
+        fprintf(fp, " %s=<bad>", label);
+        return;
+    }
+    int n = len > 60 ? 60 : len;
+    char out[80];
+    const uint16_t *chars = (const uint16_t *) ((uint8_t *) s + 0x14);
+    for (int i = 0; i < n; ++i) {
+        uint16_t c = chars[i];
+        out[i] = (c >= 32 && c < 127) ? (char) c : '?';
+    }
+    out[n] = 0;
+    fprintf(fp, " %s=\"%s\"", label, out);
+}
+
 static void print_compact(FILE *fp, Il2CppObject *obj, const char *cls) {
     Il2CppClass *k = obj->klass;
-    int32_t rid = 0, cfg = 0, camp = 0, hp = 0;
-    bool has_rid = read_int_field(obj, k, "runtimeId_", &rid);
-    read_int_field(obj, k, "configId_", &cfg);
-    read_int_field(obj, k, "camp_", &camp);
-    read_int_field(obj, k, "hpRatio_", &hp);
     fprintf(fp, "C %s ptr=%p", cls, (void *) obj);
-    if (has_rid) fprintf(fp, " rid=%d", (int) rid);
-    fprintf(fp, " cfg=%d camp=%d hp=%d", (int) cfg, (int) camp, (int) hp);
-
-    Il2CppObject *loc = read_ref_field(obj, k, "optLocation_");
-    if (!loc) loc = read_ref_field(obj, k, "location_");
-    if (loc) {
-        if (!print_vint3(fp, "loc", loc)) fprintf(fp, " loc=?\n");
-    } else {
-        fprintf(fp, " loc=none\n");
+    void *iter = nullptr;
+    FieldInfo *f;
+    while ((f = il2cpp_class_get_fields(k, &iter)) != nullptr) {
+        const char *name = il2cpp_field_get_name(f);
+        if (!name || field_is_static(f) || !interesting_name(name)) continue;
+        const Il2CppType *t = il2cpp_field_get_type(f);
+        if (!t) continue;
+        auto *base = (uint8_t *) obj + il2cpp_field_get_offset(f);
+        switch (t->type) {
+            case IL2CPP_TYPE_I4:
+            case IL2CPP_TYPE_U4:
+            case IL2CPP_TYPE_ENUM:
+                fprintf(fp, " %s=%d", name, (int) *(int32_t *) base);
+                break;
+            case IL2CPP_TYPE_I1:
+            case IL2CPP_TYPE_U1:
+            case IL2CPP_TYPE_BOOLEAN:
+                fprintf(fp, " %s=%d", name, (int) *(int8_t *) base);
+                break;
+            case IL2CPP_TYPE_I2:
+            case IL2CPP_TYPE_U2:
+                fprintf(fp, " %s=%d", name, (int) *(int16_t *) base);
+                break;
+            case IL2CPP_TYPE_R4:
+                fprintf(fp, " %s=%.2f", name, (double) *(float *) base);
+                break;
+            case IL2CPP_TYPE_VALUETYPE:
+                print_value_type(fp, name, base, field_type_name(f));
+                break;
+            case IL2CPP_TYPE_STRING: {
+                void *p = *(void **) base;
+                print_string(fp, name, (Il2CppObject *) p);
+                break;
+            }
+            case IL2CPP_TYPE_CLASS:
+            case IL2CPP_TYPE_OBJECT: {
+                void *p = *(void **) base;
+                fprintf(fp, " %s=%p", name, p);
+                if (plausible_ptr(p) && in_region((uintptr_t) p))
+                    print_vint3(fp, name, (Il2CppObject *) p);
+                break;
+            }
+            default:
+                break;
+        }
     }
-    Il2CppObject *lv = read_ref_field(obj, k, "optLastVisibleLocation_");
-    if (!lv) lv = read_ref_field(obj, k, "lastVisibleLocation_");
-    if (lv) print_vint3(fp, "lastvis", lv);
-
-    int32_t tmp = 0;
-    if (read_int_field(obj, k, "frameNo_", &tmp)) fprintf(fp, " frameNo=%d\n", (int) tmp);
-    if (read_int_field(obj, k, "lastVisibleFrameNo_", &tmp))
-        fprintf(fp, " lastVisibleFrameNo=%d\n", (int) tmp);
+    fprintf(fp, "\n");
 }
 
 static void print_full(FILE *fp, Il2CppObject *obj, const char *cls) {
@@ -242,6 +332,17 @@ static void print_full(FILE *fp, Il2CppObject *obj, const char *cls) {
         size_t off = il2cpp_field_get_offset(f);
         auto *base = (uint8_t *) obj + off;
         if (!name || !t) continue;
+        if (field_is_static(f)) continue;                 // 静态字段不在实例里
+        if (t->type == IL2CPP_TYPE_VALUETYPE) {           // Vector3 / VInt3 / Quaternion ...
+            fprintf(fp, "\n  ");
+            print_value_type(fp, name, base, field_type_name(f));
+            continue;
+        }
+        if (t->type == IL2CPP_TYPE_STRING) {
+            fprintf(fp, "\n  ");
+            print_string(fp, name, (Il2CppObject *) *(void **) base);
+            continue;
+        }
         switch (t->type) {
             case IL2CPP_TYPE_BOOLEAN:
             case IL2CPP_TYPE_I1:
