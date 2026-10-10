@@ -108,7 +108,8 @@ t=... samples=5 pass=23          <- 抓到对象了
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 模块装了但完全没有日志 | 游戏在 Magisk **denylist** 里 → Zygisk 不注入 | `magisk --denylist rm com.tencent.tmgp.sgame` 后重启 |
-| 只有 `detect game:`、之后什么都没有 | 旧代码只等 10s libil2cpp，王者冷启动/进对局会重启进程，等不到 | 已改成等 **60s**，并把每步写进 `pos_debug.log` |
-| 卡在 `Waiting for il2cpp_init...` 永不结束 | `il2cpp_is_vm_thread(NULL)` 判的是"当前线程是不是 IL2CPP 线程"，我们这个 pthread 不是 → 原写法**无超时会死等** | 已改成 **domain 建立即视为就绪 + 最多等 120s** |
+| 只有 `detect game:`、之后什么都没有 | 旧代码只等 10s libil2cpp，王者冷启动/进对局会重启进程，等不到 | 已改成等 **180s**，并把每步写进 `pos_debug.log` |
+| **启动游戏立刻闪退**，crash 回溯里有 `il2cpp_domain_get+4` + `/memfd:jit-cache` | 在 VM 就绪**之前**调用 `il2cpp_domain_get()` 去"试探" → SIGSEGV | 已**删掉**这个探测；只保留上游的 `il2cpp_is_vm_thread(NULL)` 判据，并加 240s 上限（超时则放弃采样，不冒险调用） |
+| 卡在 `Waiting for il2cpp_init...` 永不结束 | 上游原写法**无超时**；某些进程（预热的空壳进程、没跑 Unity）永远不就绪 | 现在最多等 240s，超时就放弃并写进 `pos_debug.log` |
 | 进对局时游戏闪退，crash 里有 `il2cpp_gc_foreach_heap+24` | v1 的 GC 扫堆把游戏打崩 | 已改成 v2 只读内存扫描 |
 | `pos.log` 只有 `# pos_reader start ...` 没有 `C` 行 | 采样器活着，但当前场景没有目标对象（比如还在大厅） | 进对局后自然会有；`resolved=0/11` 才是类名解析失败 |
