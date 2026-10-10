@@ -5,6 +5,12 @@
 #ifndef ZYGISK_IL2CPPDUMPER_POS_READER_H
 #define ZYGISK_IL2CPPDUMPER_POS_READER_H
 
+// 记录 game_data_dir，之后 pos_debug() 会写到 <dir>/files/pos_debug.log
+void pos_reader_set_dir(const char *game_data_dir);
+
+// 把一行进度写进 <dir>/files/pos_debug.log（绕开 logcat，便于 adb 侧排查）
+void pos_debug(const char *fmt, ...);
+
 // 在 il2cpp 初始化完成之后调用；会起一个分离线程，周期性把指定类型
 // 的实例字段写进 <game_data_dir>/files/pos.log
 void pos_reader_start(const char *game_data_dir);
