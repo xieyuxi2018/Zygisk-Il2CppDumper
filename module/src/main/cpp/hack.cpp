@@ -27,8 +27,8 @@ void hack_start(const char *game_data_dir) {
     pos_reader_set_dir(game_data_dir);
     pos_debug("hack_start: enter tid=%d dir=%s", gettid(), game_data_dir ? game_data_dir : "(null)");
     bool load = false;
-    // 冷启动时 libil2cpp.so 可能要十几秒才加载（王者尤其慢），所以等 60 秒而不是 10 秒
-    for (int i = 0; i < 60; i++) {
+    // 冷启动时 libil2cpp.so 可能要几十秒才加载（王者进对局还会重启进程），所以等 180 秒
+    for (int i = 0; i < 180; i++) {
         void *handle = xdl_open("libil2cpp.so", 0);
         if (handle) {
             load = true;
@@ -55,7 +55,7 @@ void hack_start(const char *game_data_dir) {
     }
     if (!load) {
         LOGI("libil2cpp.so not found in thread %d", gettid());
-        pos_debug("libil2cpp.so NOT found after 60s, give up");
+        pos_debug("libil2cpp.so NOT found after 180s, give up");
     }
 }
 
