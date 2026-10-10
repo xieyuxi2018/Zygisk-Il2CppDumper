@@ -18,6 +18,11 @@
 #include <linux/unistd.h>
 #include <array>
 
+// 1 = 照旧生成 dump.cs（76MB，耗时几十秒）；0 = 只跑实时采样（pos.log）
+#ifndef ENABLE_DUMP
+#define ENABLE_DUMP 1
+#endif
+
 void hack_start(const char *game_data_dir) {
     bool load = false;
     for (int i = 0; i < 10; i++) {
@@ -27,7 +32,11 @@ void hack_start(const char *game_data_dir) {
             il2cpp_api_init(handle);
             // 先把实时采样线程起起来（每秒一次），再去做耗时的 dump.cs
             pos_reader_start(game_data_dir);
+#if ENABLE_DUMP
             il2cpp_dump(game_data_dir);
+#else
+            LOGI("skip dump.cs (ENABLE_DUMP=0)");
+#endif
             break;
         } else {
             sleep(1);
