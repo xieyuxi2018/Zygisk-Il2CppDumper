@@ -27,16 +27,26 @@
 static uint64_t il2cpp_base = 0;
 
 void init_il2cpp_api(void *handle) {
-#define DO_API(r, n, p) {                      \
-    n = (r (*) p)xdl_sym(handle, #n, nullptr); \
-    if(!n) {                                   \
-        LOGW("api not found %s", #n);          \
-    }                                          \
+    int ok = 0;
+    int miss = 0;
+#define DO_API(r, n, p) {                                          \
+    n = (r (*) p)xdl_sym(handle, #n, nullptr);                     \
+    if (n) {                                                       \
+        ok++;                                                      \
+    } else {                                                       \
+        miss++;                                                    \
+        if (miss <= 30) {                                          \
+            LOGW("api not found %s", #n);                          \
+            pos_debug("api MISSING %s", #n);                       \
+        }                                                          \
+    }                                                              \
 }
 
 #include "il2cpp-api-functions.h"
 
 #undef DO_API
+    LOGI("api resolved ok=%d missing=%d", ok, miss);
+    pos_debug("api resolved ok=%d missing=%d", ok, miss);
 }
 
 std::string get_method_modifier(uint32_t flags) {
@@ -325,6 +335,7 @@ std::string dump_type(const Il2CppType *type) {
 
 void il2cpp_api_init(void *handle) {
     LOGI("il2cpp_handle: %p", handle);
+    pos_debug("api_init: enter handle=%p", handle);
     init_il2cpp_api(handle);
     if (il2cpp_domain_get_assemblies) {
         Dl_info dlInfo;
@@ -332,34 +343,34 @@ void il2cpp_api_init(void *handle) {
             il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
         }
         LOGI("il2cpp_base: %" PRIx64"", il2cpp_base);
+        pos_debug("api_init: il2cpp_base=%llx", (unsigned long long) il2cpp_base);
     } else {
         LOGE("Failed to initialize il2cpp api.");
+        pos_debug("api_init: FAILED (il2cpp_domain_get_assemblies missing)");
         return;
     }
-    // 等待 il2cpp 就绪：
-    //   原来的写法是 while (!il2cpp_is_vm_thread(nullptr)) sleep(1);  —— 没有超时，
-    //   而 il2cpp_is_vm_thread(NULL) 判断的是"当前线程是不是 IL2CPP 线程"，
-    //   我们这个 pthread 本来就不是，所以在某些进程里会**永远卡在这里**（采样器起不来）。
-    //   现在改成：只要 domain 已经建立（说明 VM 起来了）也认为就绪，并且最多等 120 秒。
+    // 就绪判据只用 il2cpp_is_vm_thread(NULL)（上游原版用法）。
+    // ⚠️ 千万不要在这里调用 il2cpp_domain_get() 去"试探" —— 实测在 VM 未就绪时调用会
+    //    直接 SIGSEGV（crash 回溯: ... -> il2cpp_domain_get+4 -> /memfd:jit-cache -> pthread_start）。
+    //    另外上游原来的写法没有超时，遇到"永远不就绪"的进程会死等；这里给 240s 上限，
+    //    超时就放弃采样（宁可没数据，也不冒险调用未就绪的 API 把游戏打崩）。
     int guard = 0;
-    for (;;) {
-        bool ready = il2cpp_is_vm_thread(nullptr);
-        if (!ready && il2cpp_domain_get) {
-            if (il2cpp_domain_get() != nullptr) ready = true;
+    while (!il2cpp_is_vm_thread(nullptr)) {
+        if (++guard > 240) {
+            LOGW("il2cpp_init not detected after %ds, skip reader", guard);
+            pos_debug("api_init: il2cpp never ready after %ds, give up (no reader)", guard);
+            return;
         }
-        if (ready) break;
-        if (++guard > 120) {
-            LOGW("il2cpp_init not detected after %ds, continue anyway", guard);
-            pos_debug("il2cpp_init wait timed out (%ds), continue anyway", guard);
-            break;
+        if (guard % 5 == 0) {
+            LOGI("Waiting for il2cpp_init... (%ds)", guard);
+            pos_debug("api_init: waiting il2cpp_init %ds", guard);
         }
-        LOGI("Waiting for il2cpp_init... (%ds)", guard);
-        if (guard % 10 == 0) pos_debug("waiting il2cpp_init ... %ds", guard);
         sleep(1);
     }
-    pos_debug("il2cpp ready (guard=%ds vm_thread=%d)", guard, (int) il2cpp_is_vm_thread(nullptr));
+    pos_debug("api_init: vm thread ready after %ds", guard);
     auto domain = il2cpp_domain_get();
-    il2cpp_thread_attach(domain);
+    if (domain && il2cpp_thread_attach) il2cpp_thread_attach(domain);
+    pos_debug("api_init: attached domain=%p", (void *) domain);
 }
 
 void il2cpp_dump(const char *outDir) {
