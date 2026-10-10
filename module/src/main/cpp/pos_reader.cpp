@@ -21,6 +21,7 @@
 #include "pos_reader.h"
 
 #include <cstdint>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -78,6 +79,29 @@ struct Region {
 };
 
 static std::vector<Region> g_regions;
+
+// ============================ 进度日志(绕开 logcat) ============================
+static char g_dir[512] = {0};
+
+void pos_reader_set_dir(const char *game_data_dir) {
+    if (!game_data_dir) return;
+    strncpy(g_dir, game_data_dir, sizeof(g_dir) - 1);
+    g_dir[sizeof(g_dir) - 1] = '\0';
+}
+
+void pos_debug(const char *fmt, ...) {
+    if (!g_dir[0]) return;
+    char path[600];
+    snprintf(path, sizeof(path), "%s/files/pos_debug.log", g_dir);
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
 
 // ============================ 小工具 ============================
 
@@ -306,33 +330,53 @@ static void reader_main(const char *game_data_dir) {
     Il2CppDomain *domain = il2cpp_domain_get ? il2cpp_domain_get() : nullptr;
     if (domain && il2cpp_thread_attach) il2cpp_thread_attach(domain);
     LOGI("pos_reader v2: started, dir=%s", game_data_dir ? game_data_dir : "(null)");
+    pos_debug("reader_main: enter dir=%s domain=%p", game_data_dir ? game_data_dir : "(null)", (void *) domain);
     if (!game_data_dir) return;
 
     char path[512];
     snprintf(path, sizeof(path), "%s%s", game_data_dir, POS_LOG_REL);
 
     // 解析目标类（VM 刚起来时可能还没就绪，重试一会儿）
+    int resolved = 0;
     for (int attempt = 0; attempt < 60; ++attempt) {
-        int found = 0;
+        resolved = 0;
         for (int i = 0; i < TARGET_COUNT; ++i) {
             if (!g_klass[i]) g_klass[i] = find_class(TARGETS[i]);
-            if (g_klass[i]) found++;
+            if (g_klass[i]) resolved++;
         }
-        if (found > 0) {
+        if (resolved > 0) {
             for (int i = 0; i < TARGET_COUNT; ++i) {
                 if (!g_klass[i] && !g_reported[i]) {
                     g_reported[i] = true;
                     LOGW("pos_reader: class not found %s.%s", TARGETS[i].ns, TARGETS[i].name);
+                    pos_debug("class NOT found: %s.%s", TARGETS[i].ns, TARGETS[i].name);
                 }
             }
-            LOGI("pos_reader: resolved %d/%d classes", found, TARGET_COUNT);
+            LOGI("pos_reader: resolved %d/%d classes", resolved, TARGET_COUNT);
             break;
         }
         usleep(500 * 1000);
     }
+    for (int i = 0; i < TARGET_COUNT; ++i) {
+        if (g_klass[i]) pos_debug("class OK: %s.%s -> %p", TARGETS[i].ns, TARGETS[i].name, (void *) g_klass[i]);
+    }
     load_regions();
+    pos_debug("resolved=%d/%d regions=%zu", resolved, TARGET_COUNT, g_regions.size());
 
+    // 起始心跳写进 pos.log，便于确认"采样器活着但还没抓到对象"
+    {
+        FILE *hb = fopen(path, "a");
+        if (hb) {
+            fprintf(hb, "# pos_reader start t=%ld resolved=%d/%d regions=%zu\n",
+                    now_ms(), resolved, TARGET_COUNT, g_regions.size());
+            fflush(hb);
+            fclose(hb);
+        }
+    }
+
+    long pass = 0;
     for (;;) {
+        pass++;
         FILE *fp = fopen(path, "a");
         if (!fp) {
             LOGE("pos_reader: cannot open %s", path);
@@ -367,7 +411,12 @@ static void reader_main(const char *game_data_dir) {
         }
         fflush(fp);
         fclose(fp);
-        if (written > 0) LOGI("pos_reader: t=%ld samples=%d", t, written);
+        if (written > 0) {
+            LOGI("pos_reader: t=%ld samples=%d", t, written);
+            pos_debug("t=%ld samples=%d pass=%ld", t, written, pass);
+        } else if (pass % 10 == 1) {
+            pos_debug("idle pass=%ld t=%ld (no objects found)", pass, t);
+        }
         usleep(POS_INTERVAL_MS * 1000);
     }
 }
