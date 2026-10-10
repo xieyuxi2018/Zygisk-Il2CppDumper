@@ -14,20 +14,22 @@
 | `module/src/main/cpp/CMakeLists.txt` | 把 `pos_reader.cpp` 加进构建 |
 | `module/src/main/cpp/game.h` | `GamePackageName` 设为 `com.tencent.tmgp.sgame` |
 
-## 采样器怎么工作
+## 采样器怎么工作（v2：只读内存扫描）
 
-1. `il2cpp_domain_get()` → 遍历所有 assembly/image，用
-   `il2cpp_class_from_name(image, 命名空间, 类名)` 解析目标类（结果缓存）。
-2. 每 `POS_INTERVAL_MS`（默认 1000ms）用 **`il2cpp_gc_foreach_heap()`** 扫一遍托管堆，
-   按"对象头 klass 指针"挑出目标类的实例（回调里不做任何分配/IO，只记录指针）。
-3. 回调结束后再打印字段：
-   - **紧凑行**（所有实例）：`runtimeId_` / `configId_` / `camp_` / `hpRatio_`，
-     以及坐标：优先 `optLocation_`（protobuf oneof），退回 `location_`；
-     若指向的是 `VInt3` 实例，则按名字读 `x_`(0x10) / `y_`(0x14) / `z_`(0x18)。
-     还会尝试 `optLastVisibleLocation_` / `lastVisibleFrameNo_` / `frameNo_`。
-   - **完整行**（每类前 `POS_FULL_OBJ`=2 个实例）：把所有标量字段按 `名字=值` 打印，
-     引用字段打指针；指向 `VInt3` 的字段会额外解码成 `(x,y,z)`。
-4. 输出追加到 `<game_data_dir>/files/pos.log`，超过 64MB 自动重开。
+> ⚠️ v1 用 `il2cpp_gc_foreach_heap()` 扫堆，实测会让游戏进程 **SIGSEGV**
+> （crash 回溯：`#00 libil2cpp.so 0x3b7e7c8` ← `#01 il2cpp_gc_foreach_heap+24`
+> ← `#02/#03 /memfd:jit-cache`（本模块线程））。所以 v2 不再碰 GC：
+
+1. `il2cpp_domain_get()` → 遍历 assembly/image，用
+   `il2cpp_class_from_name(image, 命名空间, 类名)` 解析目标类，拿到 `Il2CppClass*`（纯查询）。
+2. 每 `POS_INTERVAL_MS`（默认 2000ms）：
+   - 读 `/proc/self/maps`，挑出**匿名、可读写、1MB~420MB、非 dalvik/非文件映射**的区域；
+   - 用 `pread(/proc/self/mem)` 按 8 字节对齐扫**指向该 klass 的指针**
+     —— 托管对象头 8 字节就是 klass 指针，命中处即对象地址；
+   - 再用 `il2cpp_field_get_value()` **按字段名**读值（不写死偏移）。
+3. 打印格式与 v1 相同（见下），日志仍在 `<app_data_dir>/files/pos.log`。
+
+这条路径只读内存、不调用 GC 内部函数，不会再打崩游戏。
 
 ### 目标类（`TARGETS[]`，可自行增删）
 
@@ -79,8 +81,18 @@ adb pull /data/local/tmp/pos.log .
 
 | 宏 | 默认 | 说明 |
 |---|---|---|
-| `POS_INTERVAL_MS` | 1000 | 采样间隔 |
+| `POS_INTERVAL_MS` | 2000 | 采样间隔 |
 | `POS_MAX_OBJ` | 128 | 每类每轮最多记录实例数 |
 | `POS_FULL_OBJ` | 2 | 每类每轮打印几个"全字段"实例 |
 | `POS_LOG_MAX` | 64MB | 日志上限，超过就重开 |
-| `ENABLE_DUMP`（hack.cpp） | 1 | 0 = 跳过 76MB 的 dump.cs，只采样 |
+| `POS_REGION_MIN/MAX` | 1MB / 420MB | 参与扫描的匿名 rw 区域大小范围 |
+| `ENABLE_DUMP`（hack.cpp） | 0 | 0 = 跳过 76MB 的 dump.cs，只采样（更快、更少干扰） |
+
+## 排错记录
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 模块装了但完全没有日志 | 游戏在 Magisk **denylist** 里 → Zygisk 不注入 | `magisk --denylist rm com.tencent.tmgp.sgame` 后重启 |
+| 日志里有 `detect game:` 但无 `hack thread:` | logcat 溢出/限流，未必真没跑；用 `/proc/<pid>/fd` 看 pos.log 是否被打开来判断 | —— |
+| `libil2cpp.so not found in thread …` | 冷启动时 libil2cpp 加载慢（旧代码只等 10s） | 已改成等 **60s** |
+| 进对局时游戏闪退，crash 里有 `il2cpp_gc_foreach_heap+24` | v1 的 GC 扫堆把游戏打崩 | 已改成 v2 只读内存扫描 |
