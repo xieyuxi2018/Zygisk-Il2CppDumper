@@ -3,6 +3,7 @@
 //
 
 #include "il2cpp_dump.h"
+#include "pos_reader.h"
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
@@ -335,10 +336,28 @@ void il2cpp_api_init(void *handle) {
         LOGE("Failed to initialize il2cpp api.");
         return;
     }
-    while (!il2cpp_is_vm_thread(nullptr)) {
-        LOGI("Waiting for il2cpp_init...");
+    // 等待 il2cpp 就绪：
+    //   原来的写法是 while (!il2cpp_is_vm_thread(nullptr)) sleep(1);  —— 没有超时，
+    //   而 il2cpp_is_vm_thread(NULL) 判断的是"当前线程是不是 IL2CPP 线程"，
+    //   我们这个 pthread 本来就不是，所以在某些进程里会**永远卡在这里**（采样器起不来）。
+    //   现在改成：只要 domain 已经建立（说明 VM 起来了）也认为就绪，并且最多等 120 秒。
+    int guard = 0;
+    for (;;) {
+        bool ready = il2cpp_is_vm_thread(nullptr);
+        if (!ready && il2cpp_domain_get) {
+            if (il2cpp_domain_get() != nullptr) ready = true;
+        }
+        if (ready) break;
+        if (++guard > 120) {
+            LOGW("il2cpp_init not detected after %ds, continue anyway", guard);
+            pos_debug("il2cpp_init wait timed out (%ds), continue anyway", guard);
+            break;
+        }
+        LOGI("Waiting for il2cpp_init... (%ds)", guard);
+        if (guard % 10 == 0) pos_debug("waiting il2cpp_init ... %ds", guard);
         sleep(1);
     }
+    pos_debug("il2cpp ready (guard=%ds vm_thread=%d)", guard, (int) il2cpp_is_vm_thread(nullptr));
     auto domain = il2cpp_domain_get();
     il2cpp_thread_attach(domain);
 }
