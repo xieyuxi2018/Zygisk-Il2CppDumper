@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <time.h>
 #include <thread>
 #include <unistd.h>
 
@@ -140,7 +141,7 @@ static void print_compact(FILE *fp, Il2CppObject *obj, const char *cls) {
     read_int_field(obj, k, "configId_", &cfg);
     read_int_field(obj, k, "camp_", &camp);
     read_int_field(obj, k, "hpRatio_", &hp);
-    fprintf(fp, "C %s ptr=%p", cls, obj);
+    fprintf(fp, "C %s ptr=%p", cls, (void *) obj);
     if (has_rid) fprintf(fp, " rid=%d", (int) rid);
     fprintf(fp, " cfg=%d camp=%d hp=%d", (int) cfg, (int) camp, (int) hp);
 
@@ -164,7 +165,7 @@ static void print_compact(FILE *fp, Il2CppObject *obj, const char *cls) {
 // 完整字段打印（前几个实例）
 static void print_full(FILE *fp, Il2CppObject *obj, const char *cls) {
     Il2CppClass *k = obj->klass;
-    fprintf(fp, "OBJ %s ptr=%p", cls, obj);
+    fprintf(fp, "OBJ %s ptr=%p", cls, (void *) obj);
     void *iter = nullptr;
     FieldInfo *f;
     while ((f = il2cpp_class_get_fields(k, &iter)) != nullptr) {
